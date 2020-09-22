@@ -29,11 +29,6 @@ type Config struct {
 	Directory string
 }
 
-type cacheItem struct {
-	Data   []byte
-	Expiry int64
-}
-
 func New(cfg *Config) (*Locache, error) {
 	// Create Locache directory
 	if err := os.MkdirAll(cfg.Directory, os.ModePerm); err != nil {
