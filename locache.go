@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -11,6 +12,12 @@ import (
 	"time"
 
 	"github.com/GitbookIO/syncgroup"
+)
+
+const (
+	keyDoesntExistsError = "locache : key doesn't exists"
+	ttlParsingError      = "locache : error parsing first line of cache file"
+	keyExpiredError      = "locache : key has expired"
 )
 
 type Locache struct {
@@ -22,7 +29,7 @@ type Config struct {
 	Directory string
 }
 
-type CacheItem struct {
+type cacheItem struct {
 	Data   []byte
 	Expiry int64
 }
@@ -42,8 +49,9 @@ func New(cfg *Config) (*Locache, error) {
 	return c, nil
 }
 
-//write expiryDate at the top of file
-func (c *Locache) Set(key string, data []byte, timeoutInSeconds int64) error {
+//Caches the data provided and sets the expiration date
+//based on the Time To Live(TTL) provided
+func (c *Locache) Set(key string, data []byte, TTL time.Duration) error {
 	// Get encoded key
 	filename := c.getFilename(key)
 
@@ -58,10 +66,13 @@ func (c *Locache) Set(key string, data []byte, timeoutInSeconds int64) error {
 	}
 	defer file.Close()
 
-	expiryDate := time.Now().Add(time.Second * time.Duration(timeoutInSeconds)).Unix()
-	ttl := fmt.Sprintf("%d\n", expiryDate)
-	// Write data
-	_, err = file.Write([]byte(ttl))
+	expiryDate := time.Now().Add(TTL).Unix()
+	expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryDate))
+
+	// Write expDate on the first line of the file
+	if _, err := file.Write(expiryDateFmt); err != nil {
+		return err
+	}
 	_, err = file.Write(data)
 	return err
 }
@@ -111,7 +122,8 @@ func (c *Locache) Delete(key string) error {
 	}
 }
 
-//reads first line to get expiry date -
+//Looks up the key in the cache,
+//keyExpiredError will be returned if the data has expired
 func (c *Locache) Get(key string) ([]byte, error) {
 	// Get encoded key
 	filename := c.getFilename(key)
@@ -121,7 +133,7 @@ func (c *Locache) Get(key string) ([]byte, error) {
 	defer c.lock.RUnlock(filename)
 
 	if ok, err := exists(filename); !ok || err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %v", keyDoesntExistsError, err)
 	}
 
 	// Open file
@@ -138,20 +150,19 @@ func (c *Locache) Get(key string) ([]byte, error) {
 
 	for scanner.Scan() {
 		if count == 0 {
-			count += 1
+			//reads first line to get expiry date
+			count++
 			txt := scanner.Text()
 			ttl, err := strconv.Atoi(txt)
 			if err != nil {
-				return nil, fmt.Errorf("error parsing first line: %v", err)
+				return nil, fmt.Errorf("%s: %v", ttlParsingError, err)
 			}
 			if int64(ttl) < time.Now().Unix() {
-				//defer func() { c.Delete(key) }()
-				//fmt.Println(key, " has expired")
-				return nil, fmt.Errorf("%s has expired", key)
+				return nil, errors.New(keyExpiredError)
 			}
 			continue
 		}
-		data = append(data, []byte(scanner.Text())...)
+		data = append(data, []byte(scanner.Text()+"\n")...)
 	}
 
 	return data, nil
