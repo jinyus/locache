@@ -5,8 +5,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"os"
 	"path"
 	"strconv"
@@ -69,34 +67,34 @@ func (c *Locache) Set(key string, data []byte, timeoutInSeconds int64) error {
 }
 
 //encode expiry with data as cacheitem struct
-func (c *Locache) Set2(key string, data []byte, timeoutInSeconds int64) error {
-	// Get encoded key
-	filename := c.getFilename(key)
-
-	// Lock for writing
-	c.lock.Lock(filename)
-	defer c.lock.Unlock(filename)
-
-	// Open file
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	expiryDate := time.Now().Add(time.Second * time.Duration(timeoutInSeconds)).Unix()
-	item := CacheItem{
-		Data:   data,
-		Expiry: expiryDate,
-	}
-	encodedData, err := EncodeGob(item)
-	if err != nil {
-		return err
-	}
-	// Write data
-	_, err = file.Write(encodedData)
-	return err
-}
+//func (c *Locache) Set2(key string, data []byte, timeoutInSeconds int64) error {
+//	// Get encoded key
+//	filename := c.getFilename(key)
+//
+//	// Lock for writing
+//	c.lock.Lock(filename)
+//	defer c.lock.Unlock(filename)
+//
+//	// Open file
+//	file, err := os.Create(filename)
+//	if err != nil {
+//		return err
+//	}
+//	defer file.Close()
+//
+//	expiryDate := time.Now().Add(time.Second * time.Duration(timeoutInSeconds)).Unix()
+//	item := CacheItem{
+//		Data:   data,
+//		Expiry: expiryDate,
+//	}
+//	encodedData, err := EncodeGob(item)
+//	if err != nil {
+//		return err
+//	}
+//	// Write data
+//	_, err = file.Write(encodedData)
+//	return err
+//}
 
 func (c *Locache) Delete(key string) error {
 	// Get encoded key
@@ -114,7 +112,6 @@ func (c *Locache) Delete(key string) error {
 }
 
 //reads first line to get expiry date -
-//faster than decoding into cacheitem struct approached used in get2
 func (c *Locache) Get(key string) ([]byte, error) {
 	// Get encoded key
 	filename := c.getFilename(key)
@@ -160,43 +157,43 @@ func (c *Locache) Get(key string) ([]byte, error) {
 	return data, nil
 }
 
-func (c *Locache) Get2(key string) ([]byte, bool) {
-	// Get encoded key
-	filename := c.getFilename(key)
-
-	// Lock for reading
-	c.lock.RLock(filename)
-	defer c.lock.RUnlock(filename)
-
-	// Open file
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, false
-	}
-	defer file.Close()
-
-	// Read file
-	data, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Printf("Locache: Error reading from file %s\n", key)
-		return nil, false
-	}
-
-	var temp CacheItem
-
-	err = DecodeGob(data, &temp)
-	if err != nil {
-		fmt.Println("could not decode file content: ", err)
-		return nil, false
-	}
-
-	if temp.Expiry < time.Now().Unix() {
-		//defer func() { c.Delete(key) }()
-		//fmt.Println(key, " has expired")
-		return nil, false
-	}
-	return temp.Data, true
-}
+//func (c *Locache) Get2(key string) ([]byte, bool) {
+//	// Get encoded key
+//	filename := c.getFilename(key)
+//
+//	// Lock for reading
+//	c.lock.RLock(filename)
+//	defer c.lock.RUnlock(filename)
+//
+//	// Open file
+//	file, err := os.Open(filename)
+//	if err != nil {
+//		return nil, false
+//	}
+//	defer file.Close()
+//
+//	// Read file
+//	data, err := ioutil.ReadAll(file)
+//	if err != nil {
+//		log.Printf("Locache: Error reading from file %s\n", key)
+//		return nil, false
+//	}
+//
+//	var temp CacheItem
+//
+//	err = DecodeGob(data, &temp)
+//	if err != nil {
+//		fmt.Println("could not decode file content: ", err)
+//		return nil, false
+//	}
+//
+//	if temp.Expiry < time.Now().Unix() {
+//		//defer func() { c.Delete(key) }()
+//		//fmt.Println(key, " has expired")
+//		return nil, false
+//	}
+//	return temp.Data, true
+//}
 
 func (c *Locache) Clean() error {
 	// Delete directory
