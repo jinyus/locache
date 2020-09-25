@@ -22,6 +22,7 @@ const (
 	ttlParsingError      = "locache : error parsing first line of cache file"
 	keyExpiredError      = "locache : key has expired"
 	expiryQueue          = "expiryQueue"
+	deleteExpiryFunction = "expiryQueue"
 )
 
 type Locache struct {
@@ -29,11 +30,12 @@ type Locache struct {
 }
 
 type locache struct {
-	directory    string
-	lock         *syncgroup.MutexGroup
-	compress     bool
-	janitor      *janitor
-	expiredItems map[string]bool
+	directory        string
+	lock             *syncgroup.MutexGroup
+	compress         bool
+	janitor          *janitor
+	countingSemaphor chan struct{}
+	fileExtension    string
 }
 
 type Config struct {
@@ -56,11 +58,18 @@ func New(cfg *Config) (*Locache, error) {
 	}
 
 	// Create Locache instance
+	var extension string
+	if cfg.UseCompression {
+		extension = ".gzip"
+	} else {
+		extension = ".cache"
+	}
 	c := &locache{
-		directory:    cfg.Directory,
-		lock:         syncgroup.NewMutexGroup(),
-		compress:     cfg.UseCompression,
-		expiredItems: make(map[string]bool),
+		directory:        cfg.Directory,
+		lock:             syncgroup.NewMutexGroup(),
+		compress:         cfg.UseCompression,
+		countingSemaphor: make(chan struct{}, 1),
+		fileExtension:    extension,
 	}
 
 	C := &Locache{c}
@@ -73,36 +82,46 @@ func New(cfg *Config) (*Locache, error) {
 }
 
 func (c *locache) DeleteExpired() {
-	println("deleting expired items")
-	c.lock.RLock(expiryQueue)
-	defer c.lock.RUnlock(expiryQueue)
+	//println("\nRunning janitor, waiting to aquire token")
+	//acquire token
+	c.countingSemaphor <- struct{}{}
+	defer func() {
+		//println("token released")
+		<-c.countingSemaphor
+	}()
+	//println("token acquired")
 
-	for key, _ := range c.expiredItems {
-		println("found ", key, " in expiredItems")
-		c.lock.Lock(key)
-		if err := os.Remove(key); err != nil {
-			fmt.Println("locache: DeleteExpired: deleted cache file failed: ", err)
+	cacheFiles := findFilesByExt(c.directory, c.fileExtension)
+
+	for _, file := range cacheFiles {
+		lockKey := path.Join(c.directory, file.Name())
+		//println("found ", lockKey)
+		if c.isExpired(lockKey) {
+			println("deleting ", lockKey, " from cache")
+			err := c.deleteFile(lockKey)
+			if err != nil {
+				println("deletion error: ", err)
+			}
+
 		}
-		delete(c.expiredItems, key)
-		c.lock.Unlock(key)
 	}
 
 }
 
-func (c *locache) addToExpiryQueue(filename string) {
-	//lock map for writing
-	c.lock.Lock(expiryQueue)
-	defer c.lock.Unlock(expiryQueue)
-
-	c.expiredItems[filename] = true
-}
-func (c *locache) removeFromExpiryQueue(filename string) {
-	//lock map for writing
-	c.lock.Lock(expiryQueue)
-	defer c.lock.Unlock(expiryQueue)
-
-	delete(c.expiredItems, filename)
-}
+//func (c *locache) addToExpiryQueue(filename string) {
+//	//lock map for writing
+//	c.lock.Lock(expiryQueue)
+//	defer c.lock.Unlock(expiryQueue)
+//
+//	c.expiredItems[filename] = true
+//}
+//func (c *locache) removeFromExpiryQueue(filename string) {
+//	//lock map for writing
+//	c.lock.Lock(expiryQueue)
+//	defer c.lock.Unlock(expiryQueue)
+//
+//	delete(c.expiredItems, filename)
+//}
 
 //Caches the data provided and sets the expiration date
 //based on the Time To Live(TTL) provided
@@ -138,10 +157,6 @@ func (c *locache) Set(key string, data []byte, TTL time.Duration) error {
 		}
 	}
 
-	if err != nil {
-		go c.removeFromExpiryQueue(filename)
-	}
-
 	return err
 }
 
@@ -149,6 +164,18 @@ func (c *locache) Delete(key string) error {
 	// Get encoded key
 	filename := c.getFilename(key)
 
+	// Lock for writing
+	c.lock.Lock(filename)
+	defer c.lock.Unlock(filename)
+
+	if ok, err := exists(filename); ok {
+		return os.Remove(filename)
+	} else {
+		return err
+	}
+}
+
+func (c *locache) deleteFile(filename string) error {
 	// Lock for writing
 	c.lock.Lock(filename)
 	defer c.lock.Unlock(filename)
@@ -190,7 +217,6 @@ func (c *locache) Get(key string) ([]byte, error) {
 		defer zr.Close()
 
 		if zr.ModTime.Before(time.Now()) {
-			go c.addToExpiryQueue(filename)
 			return nil, errors.New(keyExpiredError)
 		}
 		//buf := bytes.NewBuffer(data)
@@ -236,13 +262,49 @@ func (c *locache) Clean() error {
 func (c *locache) getFilename(key string) string {
 	hasher := md5.New()
 	hasher.Write([]byte(key))
-	var extension string
-	if c.compress {
-		extension = ".gzip"
-	} else {
-		extension = ".cache"
+	return path.Join(c.directory, hex.EncodeToString(hasher.Sum(nil))+c.fileExtension)
+}
+
+func (c *locache) isExpired(filename string) bool {
+	c.lock.RLock(filename)
+	defer c.lock.RUnlock(filename)
+
+	if ok, err := exists(filename); !ok || err != nil {
+		return false
 	}
-	return path.Join(c.directory, hex.EncodeToString(hasher.Sum(nil))+extension)
+	file, err := os.Open(filename)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	if c.compress {
+		zr, err := gzip.NewReader(file)
+		if err != nil {
+			return false
+		}
+		defer zr.Close()
+
+		if zr.ModTime.Before(time.Now()) {
+			return true
+		}
+	}
+
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		//reads first line to get expiry date
+		txt := scanner.Text()
+		ttl, err := strconv.Atoi(txt)
+		if err != nil {
+			return false
+		}
+		if int64(ttl) < time.Now().Unix() {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // check file exist.

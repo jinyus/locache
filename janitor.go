@@ -25,8 +25,9 @@ func (j *janitor) Run(c *locache) {
 	for {
 		select {
 		case <-ticker.C:
-			c.DeleteExpired()
+			go c.DeleteExpired()
 		case <-j.stop:
+			println("\ncleaning up")
 			ticker.Stop()
 			return
 		}

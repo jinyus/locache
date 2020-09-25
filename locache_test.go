@@ -78,7 +78,7 @@ func TestJanitor(t *testing.T) {
 	expiryTimes := []time.Duration{
 		2 * time.Second,
 		800 * time.Millisecond,
-		6 * time.Second,
+		12 * time.Second,
 		1300 * time.Millisecond,
 	}
 
@@ -89,17 +89,8 @@ func TestJanitor(t *testing.T) {
 		}
 	}
 
-	println("sleeping for get\n\n")
-	time.Sleep(3 * time.Second)
-	println("woke up to get\n")
-
-	for i := 0; i < 4; i++ {
-		key := fmt.Sprint("item", i)
-		_, _ = cache.Get(key)
-	}
-
 	println("sleeping so janitor can clean up\n\n")
-	time.Sleep(12 * time.Second)
+	time.Sleep(25 * time.Second)
 	println("woke up\n")
 }
 
