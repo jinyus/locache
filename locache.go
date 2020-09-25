@@ -2,12 +2,15 @@ package locache
 
 import (
 	"bufio"
+	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -18,17 +21,34 @@ const (
 	keyDoesntExistsError = "locache : key doesn't exists"
 	ttlParsingError      = "locache : error parsing first line of cache file"
 	keyExpiredError      = "locache : key has expired"
+	expiryQueue          = "expiryQueue"
 )
 
 type Locache struct {
-	directory string
-	lock      *syncgroup.MutexGroup
+	*locache
+}
+
+type locache struct {
+	directory    string
+	lock         *syncgroup.MutexGroup
+	compress     bool
+	janitor      *janitor
+	expiredItems map[string]bool
 }
 
 type Config struct {
-	Directory string
+	Directory       string
+	UseCompression  bool
+	CleanUpInterval time.Duration
 }
 
+//Creates a new Locache, gzip compression will be used if UseCompression is true
+//Performance:
+//	14000 reads/s without compression   (15kb read)
+//  6000 reads/s with compression 		(6kb read)
+//
+//	250 writes/s without compression    (15kb written)
+//  1000 writes/s with compression	    (6kb written)
 func New(cfg *Config) (*Locache, error) {
 	// Create Locache directory
 	if err := os.MkdirAll(cfg.Directory, os.ModePerm); err != nil {
@@ -36,17 +56,57 @@ func New(cfg *Config) (*Locache, error) {
 	}
 
 	// Create Locache instance
-	c := &Locache{
-		directory: cfg.Directory,
-		lock:      syncgroup.NewMutexGroup(),
+	c := &locache{
+		directory:    cfg.Directory,
+		lock:         syncgroup.NewMutexGroup(),
+		compress:     cfg.UseCompression,
+		expiredItems: make(map[string]bool),
 	}
 
-	return c, nil
+	C := &Locache{c}
+
+	if cfg.CleanUpInterval > 0 {
+		runJanitor(c, cfg.CleanUpInterval)
+		runtime.SetFinalizer(C, stopJanitor)
+	}
+	return C, nil
+}
+
+func (c *locache) DeleteExpired() {
+	println("deleting expired items")
+	c.lock.RLock(expiryQueue)
+	defer c.lock.RUnlock(expiryQueue)
+
+	for key, _ := range c.expiredItems {
+		println("found ", key, " in expiredItems")
+		c.lock.Lock(key)
+		if err := os.Remove(key); err != nil {
+			fmt.Println("locache: DeleteExpired: deleted cache file failed: ", err)
+		}
+		delete(c.expiredItems, key)
+		c.lock.Unlock(key)
+	}
+
+}
+
+func (c *locache) addToExpiryQueue(filename string) {
+	//lock map for writing
+	c.lock.Lock(expiryQueue)
+	defer c.lock.Unlock(expiryQueue)
+
+	c.expiredItems[filename] = true
+}
+func (c *locache) removeFromExpiryQueue(filename string) {
+	//lock map for writing
+	c.lock.Lock(expiryQueue)
+	defer c.lock.Unlock(expiryQueue)
+
+	delete(c.expiredItems, filename)
 }
 
 //Caches the data provided and sets the expiration date
 //based on the Time To Live(TTL) provided
-func (c *Locache) Set(key string, data []byte, TTL time.Duration) error {
+func (c *locache) Set(key string, data []byte, TTL time.Duration) error {
 	// Get encoded key
 	filename := c.getFilename(key)
 
@@ -61,48 +121,31 @@ func (c *Locache) Set(key string, data []byte, TTL time.Duration) error {
 	}
 	defer file.Close()
 
-	expiryDate := time.Now().Add(TTL).Unix()
-	expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryDate))
+	expiryDate := time.Now().Add(TTL)
+	expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryDate.Unix()))
 
-	// Write expDate on the first line of the file
-	if _, err := file.Write(expiryDateFmt); err != nil {
-		return err
+	if c.compress {
+		zw := gzip.NewWriter(file)
+		defer zw.Close()
+		zw.ModTime = expiryDate
+		//buf := bytes.NewBuffer(data)
+		//_, err = io.Copy(zw, buf)
+		_, err = zw.Write(data)
+	} else {
+		// Write expDate on the first line of the file
+		if _, err = file.Write(expiryDateFmt); err == nil {
+			_, err = file.Write(data)
+		}
 	}
-	_, err = file.Write(data)
+
+	if err != nil {
+		go c.removeFromExpiryQueue(filename)
+	}
+
 	return err
 }
 
-//encode expiry with data as cacheitem struct
-//func (c *Locache) Set2(key string, data []byte, timeoutInSeconds int64) error {
-//	// Get encoded key
-//	filename := c.getFilename(key)
-//
-//	// Lock for writing
-//	c.lock.Lock(filename)
-//	defer c.lock.Unlock(filename)
-//
-//	// Open file
-//	file, err := os.Create(filename)
-//	if err != nil {
-//		return err
-//	}
-//	defer file.Close()
-//
-//	expiryDate := time.Now().Add(time.Second * time.Duration(timeoutInSeconds)).Unix()
-//	item := CacheItem{
-//		Data:   data,
-//		Expiry: expiryDate,
-//	}
-//	encodedData, err := EncodeGob(item)
-//	if err != nil {
-//		return err
-//	}
-//	// Write data
-//	_, err = file.Write(encodedData)
-//	return err
-//}
-
-func (c *Locache) Delete(key string) error {
+func (c *locache) Delete(key string) error {
 	// Get encoded key
 	filename := c.getFilename(key)
 
@@ -119,7 +162,7 @@ func (c *Locache) Delete(key string) error {
 
 //Looks up the key in the cache,
 //keyExpiredError will be returned if the data has expired
-func (c *Locache) Get(key string) ([]byte, error) {
+func (c *locache) Get(key string) ([]byte, error) {
 	// Get encoded key
 	filename := c.getFilename(key)
 
@@ -137,8 +180,26 @@ func (c *Locache) Get(key string) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-
 	var data []byte
+
+	if c.compress {
+		zr, err := gzip.NewReader(file)
+		if err != nil {
+			return nil, err
+		}
+		defer zr.Close()
+
+		if zr.ModTime.Before(time.Now()) {
+			go c.addToExpiryQueue(filename)
+			return nil, errors.New(keyExpiredError)
+		}
+		//buf := bytes.NewBuffer(data)
+		if data, err = ioutil.ReadAll(zr); err != nil {
+			return nil, fmt.Errorf("locach Get : error reading compressed file : %v ", err)
+		}
+		return data, nil
+	}
+
 	var count int
 
 	scanner := bufio.NewScanner(file)
@@ -163,45 +224,7 @@ func (c *Locache) Get(key string) ([]byte, error) {
 	return data, nil
 }
 
-//func (c *Locache) Get2(key string) ([]byte, bool) {
-//	// Get encoded key
-//	filename := c.getFilename(key)
-//
-//	// Lock for reading
-//	c.lock.RLock(filename)
-//	defer c.lock.RUnlock(filename)
-//
-//	// Open file
-//	file, err := os.Open(filename)
-//	if err != nil {
-//		return nil, false
-//	}
-//	defer file.Close()
-//
-//	// Read file
-//	data, err := ioutil.ReadAll(file)
-//	if err != nil {
-//		log.Printf("Locache: Error reading from file %s\n", key)
-//		return nil, false
-//	}
-//
-//	var temp CacheItem
-//
-//	err = DecodeGob(data, &temp)
-//	if err != nil {
-//		fmt.Println("could not decode file content: ", err)
-//		return nil, false
-//	}
-//
-//	if temp.Expiry < time.Now().Unix() {
-//		//defer func() { c.Delete(key) }()
-//		//fmt.Println(key, " has expired")
-//		return nil, false
-//	}
-//	return temp.Data, true
-//}
-
-func (c *Locache) Clean() error {
+func (c *locache) Clean() error {
 	// Delete directory
 	if err := os.RemoveAll(c.directory); err != nil {
 		return err
@@ -210,10 +233,16 @@ func (c *Locache) Clean() error {
 	return os.MkdirAll(c.directory, os.ModePerm)
 }
 
-func (c *Locache) getFilename(key string) string {
+func (c *locache) getFilename(key string) string {
 	hasher := md5.New()
 	hasher.Write([]byte(key))
-	return path.Join(c.directory, hex.EncodeToString(hasher.Sum(nil)))
+	var extension string
+	if c.compress {
+		extension = ".gzip"
+	} else {
+		extension = ".cache"
+	}
+	return path.Join(c.directory, hex.EncodeToString(hasher.Sum(nil))+extension)
 }
 
 // check file exist.
