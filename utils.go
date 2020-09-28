@@ -6,6 +6,17 @@ import (
 	"strings"
 )
 
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func findFilesByExt(directory string, extension string) []os.FileInfo {
 	f, err := os.Open(directory)
 	if err != nil {

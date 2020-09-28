@@ -205,6 +205,7 @@ func setup(t *testing.T, directory string, cleanUpInterval time.Duration) (*Loca
 	return cache, teardown
 
 }
+
 func setupCompress(t *testing.T, directory string) (*Locache, func()) {
 	teardown := func() {}
 	cache, err := New(&Config{Directory: directory, UseCompression: true})
