@@ -18,6 +18,7 @@ func exists(path string) (bool, error) {
 }
 
 func findFilesByExt(directory string, extension string) []os.FileInfo {
+	println("looking for files in:", directory, " ext: ", extension)
 	f, err := os.Open(directory)
 	if err != nil {
 		fmt.Printf("could not open directory: %v\n", err)

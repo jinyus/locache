@@ -1,8 +1,6 @@
 package locache
 
 import (
-	"bytes"
-	"encoding/gob"
 	"fmt"
 	"os"
 	"testing"
@@ -69,6 +67,40 @@ func TestLocache_Get(t *testing.T) {
 		}
 		if p1.FirstName != p2.FirstName || p1.LastName != p2.LastName || p2.Age != p2.Age || p1.Occupation != p2.Occupation || p1.Hobbies[0] != p2.Hobbies[0] || p1.Bio != p2.Bio {
 			t.Fatal("got corrupted data from cache: ", cachedData)
+		}
+	}
+}
+
+func TestLocache_Get2(t *testing.T) {
+	cache, teardown := setup(t, "./cache", 0)
+	defer teardown()
+
+	p1 := PersonTest{
+		FirstName:    "Bob",
+		LastName:     "Builder",
+		DOB:          time.Date(2009, time.November, 10, 23, 0, 0, 0, time.UTC),
+		Age:          21,
+		Occupation:   "Computer SciEntiSt",
+		Hobbies:      []string{"Swimming", "Coding", "Playing Hockey", "Cycling"},
+		FavoriteFood: []string{"Oxtail and yam with sweet potato", "mutton with white rice"},
+		Bio:          "Hello my name is Bob and I love writing coding and cycling. I love being a scientist because it allows me to research and discover new things.Even though I no longer attend school, I have and will never stop learning, I love reading non-fictional books and watching educational tutorials in my free time.",
+	}
+
+	data, err := EncodeGob(p1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cache.Set("myCustomData", data, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	var p2 PersonTest
+	if err := cache.Get2("myCustomData", &p2); err != nil {
+		t.Fatal("could not retrieve data from cache: ", err)
+	} else {
+		if p1.FirstName != p2.FirstName || p1.LastName != p2.LastName || p2.Age != p2.Age || p1.Occupation != p2.Occupation || p1.Hobbies[0] != p2.Hobbies[0] || p1.Bio != p2.Bio {
+			t.Fatal("got corrupted data from cache")
 		}
 	}
 }
@@ -163,8 +195,16 @@ func BenchmarkLocache_Get(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		if _, err := cache.Get("mydata"); err != nil {
+		if data, err := cache.Get("mydata"); err != nil {
 			b.Fatal("could not retrieve data from cache: ", err)
+		} else {
+			var p2 PersonTest
+			if err := DecodeGob(data, &p2); err != nil {
+				b.Fatal("could not decode result from cache: ", err)
+			}
+			if p2.FirstName != "Bob" {
+				b.Fatal("wrong first received from cache: ", p2.FirstName)
+			}
 		}
 	}
 }
@@ -178,7 +218,22 @@ func BenchmarkLocache_Set(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		if err := cache.Set("mydata", testData, time.Hour); err != nil {
+		p1 := PersonTest{
+			FirstName:    "Bob",
+			LastName:     "Builder",
+			DOB:          time.Date(2009, time.November, 10, 23, 0, 0, 0, time.UTC),
+			Age:          21,
+			Occupation:   "Computer SciEntiSt",
+			Hobbies:      []string{"Swimming", "Coding", "Playing Hockey", "Cycling"},
+			FavoriteFood: []string{"Oxtail and yam with sweet potato", "mutton with white rice"},
+			Bio:          "Hello my name is Bob and I love writing coding and cycling. I love being a scientist because it allows me to research and discover new things.Even though I no longer attend school, I have and will never stop learning, I love reading non-fictional books and watching educational tutorials in my free time.",
+		}
+
+		data, err := EncodeGob(p1)
+		if err != nil {
+			b.Fatal("could not encode data: ", err)
+		}
+		if err := cache.Set("mydata", data, time.Hour); err != nil {
 			b.Fatal("could not retrieve data from cache: ", err)
 		}
 	}
@@ -221,29 +276,6 @@ func setupCompress(t *testing.T, directory string) (*Locache, func()) {
 	}
 
 	return cache, teardown
-
-}
-
-func EncodeGob(v interface{}) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	err := enc.Encode(v)
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-func DecodeGob(b []byte, result interface{}) error {
-	buf := bytes.NewBuffer(b)
-	enc := gob.NewDecoder(buf)
-
-	err := enc.Decode(result)
-	if err != nil {
-		return err
-	}
-	return nil
 
 }
 

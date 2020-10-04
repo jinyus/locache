@@ -21,6 +21,7 @@ func stopJanitor(c *Locache) {
 }
 
 func (j *janitor) Run(c *locache) {
+	//println("starting janitor")
 	ticker := time.NewTicker(j.Interval)
 	for {
 		select {

@@ -73,6 +73,7 @@ func New(cfg *Config) (*Locache, error) {
 	C := &Locache{c}
 
 	if cfg.CleanUpInterval > 0 {
+		//println("clean up interval", cfg.CleanUpInterval.String())
 		runJanitor(c, cfg.CleanUpInterval)
 		runtime.SetFinalizer(C, stopJanitor)
 	}
@@ -119,7 +120,7 @@ func (c *locache) Set(key string, data []byte, TTL time.Duration) error {
 
 //Looks up the key in the cache,
 //keyExpiredError will be returned if the data has expired
-func (c *locache) Get(key string) ([]byte, error) {
+func (c *locache) Get(key string, result interface{}) error {
 	// Get encoded key
 	filename := c.getFilename(key)
 
@@ -128,13 +129,13 @@ func (c *locache) Get(key string) ([]byte, error) {
 	defer c.lock.RUnlock(filename)
 
 	if ok, err := exists(filename); !ok || err != nil {
-		return nil, fmt.Errorf("%s: %v", keyDoesntExistsError, err)
+		return fmt.Errorf("%s: %v", keyDoesntExistsError, err)
 	}
 
 	// Open file
 	file, err := os.Open(filename)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
 	var data []byte
@@ -142,18 +143,18 @@ func (c *locache) Get(key string) ([]byte, error) {
 	if c.compress {
 		zr, err := gzip.NewReader(file)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer zr.Close()
 
 		if zr.ModTime.Before(time.Now()) {
-			return nil, errors.New(keyExpiredError)
+			return errors.New(keyExpiredError)
 		}
 		//buf := bytes.NewBuffer(data)
 		if data, err = ioutil.ReadAll(zr); err != nil {
-			return nil, fmt.Errorf("locach Get : error reading compressed file : %v ", err)
+			return fmt.Errorf("locach Get : error reading compressed file : %v ", err)
 		}
-		return data, nil
+		return DecodeGob(data, result)
 	}
 
 	var count int
@@ -167,17 +168,17 @@ func (c *locache) Get(key string) ([]byte, error) {
 			txt := scanner.Text()
 			ttl, err := strconv.Atoi(txt)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %v", ttlParsingError, err)
+				return fmt.Errorf("%s: %v", ttlParsingError, err)
 			}
 			if int64(ttl) < time.Now().Unix() {
-				return nil, errors.New(keyExpiredError)
+				return errors.New(keyExpiredError)
 			}
 			continue
 		}
 		data = append(data, []byte(scanner.Text()+"\n")...)
 	}
 
-	return data, nil
+	return DecodeGob(data, result)
 }
 
 func (c *locache) Delete(key string) error {
@@ -205,7 +206,7 @@ func (c *locache) DeleteAll() error {
 }
 
 func (c *locache) DeleteExpired() {
-	//println("\nRunning janitor, waiting to aquire token")
+	//println("\nRunning janitor, waiting to acquire token")
 	//acquire token
 	c.cleaningSemaphore <- struct{}{}
 	defer func() {
