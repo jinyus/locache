@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func exists(path string) (bool, error) {
+func FileExists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
 		return true, nil
@@ -17,7 +17,7 @@ func exists(path string) (bool, error) {
 	return false, err
 }
 
-func findFilesByExt(directory string, extension string) []os.FileInfo {
+func FindFilesByExt(directory string, extension string) []os.FileInfo {
 	println("looking for files in:", directory, " ext: ", extension)
 	f, err := os.Open(directory)
 	if err != nil {

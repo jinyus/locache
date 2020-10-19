@@ -82,7 +82,12 @@ func New(cfg *Config) (*Locache, error) {
 
 //Caches the data provided and sets the expiration date
 //based on the Time To Live(TTL) provided
-func (c *locache) Set(key string, data []byte, TTL time.Duration) error {
+func (c *locache) Set(key string, item interface{}, expiryTimestamp int64) error {
+
+	data, err := EncodeGob(item)
+	if err != nil {
+		return errors.New("locache : Set : could not encode item : " + err.Error())
+	}
 	// Get encoded key
 	filename := c.getFilename(key)
 
@@ -97,14 +102,13 @@ func (c *locache) Set(key string, data []byte, TTL time.Duration) error {
 	}
 	defer file.Close()
 
-	expiryDate := time.Now().Add(TTL)
-	expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryDate.Unix()))
+	expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryTimestamp))
 
 	//fmt.Printf("caching %s filename: %s\n", key, filename)
 	if c.compress {
 		zw := gzip.NewWriter(file)
 		defer zw.Close()
-		zw.ModTime = expiryDate
+		zw.ModTime = time.Unix(expiryTimestamp, 0)
 		//buf := bytes.NewBuffer(data)
 		//_, err = io.Copy(zw, buf)
 		_, err = zw.Write(data)
@@ -128,7 +132,7 @@ func (c *locache) Get(key string, result interface{}) error {
 	c.lock.RLock(filename)
 	defer c.lock.RUnlock(filename)
 
-	if ok, err := exists(filename); !ok || err != nil {
+	if ok, err := FileExists(filename); !ok || err != nil {
 		return fmt.Errorf("%s: %v", keyDoesntExistsError, err)
 	}
 
@@ -189,7 +193,7 @@ func (c *locache) Delete(key string) error {
 	c.lock.Lock(filename)
 	defer c.lock.Unlock(filename)
 
-	if ok, err := exists(filename); ok {
+	if ok, err := FileExists(filename); ok {
 		return os.Remove(filename)
 	} else {
 		return err
@@ -215,7 +219,7 @@ func (c *locache) DeleteExpired() {
 	}()
 	//println("token acquired")
 
-	cacheFiles := findFilesByExt(c.directory, c.fileExtension)
+	cacheFiles := FindFilesByExt(c.directory, c.fileExtension)
 
 	for _, file := range cacheFiles {
 		lockKey := path.Join(c.directory, file.Name())
@@ -237,7 +241,7 @@ func (c *locache) deleteFile(filename string) error {
 	c.lock.Lock(filename)
 	defer c.lock.Unlock(filename)
 
-	if ok, err := exists(filename); ok {
+	if ok, err := FileExists(filename); ok {
 		return os.Remove(filename)
 	} else {
 		return err
@@ -254,7 +258,7 @@ func (c *locache) isExpired(filename string) bool {
 	c.lock.RLock(filename)
 	defer c.lock.RUnlock(filename)
 
-	if ok, err := exists(filename); !ok || err != nil {
+	if ok, err := FileExists(filename); !ok || err != nil {
 		return false
 	}
 	file, err := os.Open(filename)
