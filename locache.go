@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"path"
 	"runtime"
@@ -102,8 +103,6 @@ func (c *locache) Set(key string, item interface{}, expiryTimestamp int64) error
 	}
 	defer file.Close()
 
-	expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryTimestamp))
-
 	//fmt.Printf("caching %s filename: %s\n", key, filename)
 	if c.compress {
 		zw := gzip.NewWriter(file)
@@ -114,6 +113,7 @@ func (c *locache) Set(key string, item interface{}, expiryTimestamp int64) error
 		_, err = zw.Write(data)
 	} else {
 		// Write expDate on the first line of the file
+		expiryDateFmt := []byte(fmt.Sprintf("%d\n", expiryTimestamp))
 		if _, err = file.Write(expiryDateFmt); err == nil {
 			_, err = file.Write(data)
 		}
@@ -132,8 +132,10 @@ func (c *locache) Get(key string, result interface{}) error {
 	c.lock.RLock(filename)
 	defer c.lock.RUnlock(filename)
 
-	if ok, err := FileExists(filename); !ok || err != nil {
-		return fmt.Errorf("%s: %v", keyDoesntExistsError, err)
+	if ok, err := FileExists(filename); err != nil {
+		return fmt.Errorf("locache : Get : error reading file : %v", err)
+	} else if !ok {
+		return errors.New(keyDoesntExistsError)
 	}
 
 	// Open file
@@ -156,7 +158,7 @@ func (c *locache) Get(key string, result interface{}) error {
 		}
 		//buf := bytes.NewBuffer(data)
 		if data, err = ioutil.ReadAll(zr); err != nil {
-			return fmt.Errorf("locach Get : error reading compressed file : %v ", err)
+			return fmt.Errorf("locach  : Get : error reading compressed file : %v ", err)
 		}
 		return DecodeGob(data, result)
 	}
@@ -210,25 +212,21 @@ func (c *locache) DeleteAll() error {
 }
 
 func (c *locache) DeleteExpired() {
-	//println("\nRunning janitor, waiting to acquire token")
 	//acquire token
 	c.cleaningSemaphore <- struct{}{}
 	defer func() {
-		//println("token released")
+		//release token
 		<-c.cleaningSemaphore
 	}()
-	//println("token acquired")
 
 	cacheFiles := FindFilesByExt(c.directory, c.fileExtension)
 
 	for _, file := range cacheFiles {
 		lockKey := path.Join(c.directory, file.Name())
-		//println("found ", lockKey)
 		if c.isExpired(lockKey) {
-			//println("deleting ", lockKey, " from cache")
 			err := c.deleteFile(lockKey)
 			if err != nil {
-				println("deletion error: ", err)
+				log.Println("deletion error: ", err)
 			}
 
 		}

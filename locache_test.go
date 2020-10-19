@@ -56,6 +56,15 @@ func TestLocache_Get(t *testing.T) {
 			t.Fatal("got corrupted data from cache")
 		}
 	}
+
+	//GET key that doesn't exitst
+
+	if err := cache.Get("nonexistentkey", &p2); err == nil {
+		t.Fatal("an error should be returned for a key that doesn't exist: ", err)
+	} else if errMsg := err.Error(); errMsg != keyDoesntExistsError {
+		t.Fatalf("incorrect error returned for a key that doesn't exist:\nexpected : %s\nactual: %s \n", keyDoesntExistsError, errMsg)
+	}
+
 }
 
 func TestJanitor(t *testing.T) {
